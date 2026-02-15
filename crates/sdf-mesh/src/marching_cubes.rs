@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use sdf_core::{Point3, Sdf3};
 
 use crate::Mesh;
@@ -79,10 +77,10 @@ where
     let field = sample_grid(config, spacing, &mut sample);
 
     let mut mesh = Mesh::empty();
-    let mut vertex_cache = HashMap::<(u64, u64, u64), u32>::new();
+    let mut edge_cache = EdgeVertexCache::new(nx, ny, nz);
     let mut corner_values = [0.0_f64; 8];
     let mut corner_points = [[0.0_f64; 3]; 8];
-    let mut edge_points = [[0.0_f64; 3]; 12];
+    let mut edge_indices = [0_u32; 12];
 
     for z in 0..(nz - 1) {
         for y in 0..(ny - 1) {
@@ -120,12 +118,19 @@ where
                         continue;
                     }
                     let [a, b] = EDGE_ENDPOINTS[edge_id];
-                    edge_points[edge_id] = interpolate_edge(
+                    let point = interpolate_edge(
                         corner_points[a],
                         corner_points[b],
                         corner_values[a],
                         corner_values[b],
                         config.iso_level,
+                    );
+                    let key = edge_cache_key(x, y, z, edge_id);
+                    edge_indices[edge_id] = insert_vertex(
+                        &mut mesh,
+                        &mut edge_cache,
+                        key,
+                        point,
                     );
                 }
 
@@ -136,9 +141,9 @@ where
                     let e1 = row[tri_idx + 1] as usize;
                     let e2 = row[tri_idx + 2] as usize;
 
-                    let i0 = insert_vertex(&mut mesh, &mut vertex_cache, edge_points[e0]);
-                    let i1 = insert_vertex(&mut mesh, &mut vertex_cache, edge_points[e1]);
-                    let i2 = insert_vertex(&mut mesh, &mut vertex_cache, edge_points[e2]);
+                    let i0 = edge_indices[e0];
+                    let i1 = edge_indices[e1];
+                    let i2 = edge_indices[e2];
                     mesh.triangles.push([i0, i1, i2]);
 
                     tri_idx += 3;
@@ -197,17 +202,101 @@ fn interpolate_edge(p1: Point3, p2: Point3, v1: f64, v2: f64, iso: f64) -> Point
 #[inline]
 fn insert_vertex(
     mesh: &mut Mesh,
-    cache: &mut HashMap<(u64, u64, u64), u32>,
+    edge_cache: &mut EdgeVertexCache,
+    edge_key: (usize, usize, usize, u8),
     point: Point3,
 ) -> u32 {
-    let key = (point[0].to_bits(), point[1].to_bits(), point[2].to_bits());
-    if let Some(index) = cache.get(&key).copied() {
+    if let Some(index) = edge_cache.get(edge_key) {
         return index;
     }
+
     let index = mesh.vertices.len() as u32;
     mesh.vertices.push(point);
-    cache.insert(key, index);
+    edge_cache.set(edge_key, index);
     index
+}
+
+#[derive(Debug)]
+struct EdgeVertexCache {
+    nx: usize,
+    ny: usize,
+    x_edges: Vec<i32>,
+    y_edges: Vec<i32>,
+    z_edges: Vec<i32>,
+}
+
+impl EdgeVertexCache {
+    fn new(nx: usize, ny: usize, nz: usize) -> Self {
+        let x_edges = vec![-1_i32; (nx - 1) * ny * nz];
+        let y_edges = vec![-1_i32; nx * (ny - 1) * nz];
+        let z_edges = vec![-1_i32; nx * ny * (nz - 1)];
+        Self {
+            nx,
+            ny,
+            x_edges,
+            y_edges,
+            z_edges,
+        }
+    }
+
+    #[inline]
+    fn get(&self, key: (usize, usize, usize, u8)) -> Option<u32> {
+        let (axis, idx) = self.lookup(key);
+        let value = match axis {
+            0 => self.x_edges[idx],
+            1 => self.y_edges[idx],
+            2 => self.z_edges[idx],
+            _ => unreachable!(),
+        };
+        if value >= 0 {
+            Some(value as u32)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn set(&mut self, key: (usize, usize, usize, u8), value: u32) {
+        let (axis, idx) = self.lookup(key);
+        let value_i32 = value as i32;
+        match axis {
+            0 => self.x_edges[idx] = value_i32,
+            1 => self.y_edges[idx] = value_i32,
+            2 => self.z_edges[idx] = value_i32,
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline]
+    fn lookup(&self, key: (usize, usize, usize, u8)) -> (u8, usize) {
+        let (x, y, z, axis) = key;
+        let idx = match axis {
+            0 => x + y * (self.nx - 1) + z * (self.nx - 1) * self.ny,
+            1 => x + y * self.nx + z * self.nx * (self.ny - 1),
+            2 => x + y * self.nx + z * self.nx * self.ny,
+            _ => unreachable!("edge axis out of range"),
+        };
+        (axis, idx)
+    }
+}
+
+#[inline]
+fn edge_cache_key(x: usize, y: usize, z: usize, edge_id: usize) -> (usize, usize, usize, u8) {
+    match edge_id {
+        0 => (x, y, z, 0),
+        1 => (x + 1, y, z, 1),
+        2 => (x, y + 1, z, 0),
+        3 => (x, y, z, 1),
+        4 => (x, y, z + 1, 0),
+        5 => (x + 1, y, z + 1, 1),
+        6 => (x, y + 1, z + 1, 0),
+        7 => (x, y, z + 1, 1),
+        8 => (x, y, z, 2),
+        9 => (x + 1, y, z, 2),
+        10 => (x + 1, y + 1, z, 2),
+        11 => (x, y + 1, z, 2),
+        _ => unreachable!("edge id out of range"),
+    }
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
 use sdf_core::{
     Sdf3, box3, capped_cone, capped_cylinder, capsule, cylinder, difference, elongate,
@@ -104,6 +105,7 @@ fn main() -> Result<(), DynError> {
         "evaluate-transform-scene" => run_evaluate_transform_scene(&args[1..]),
         "mesh-metrics" => run_mesh_metrics(&args[1..]),
         "export-mesh" => run_export_mesh(&args[1..]),
+        "benchmark-pipeline" => run_benchmark_pipeline(&args[1..]),
         _ => {
             print_usage();
             Ok(())
@@ -276,6 +278,80 @@ fn run_export_mesh(args: &[String]) -> Result<(), DynError> {
         _ => return Err(format!("unknown format: {format}").into()),
     }
 
+    Ok(())
+}
+
+fn run_benchmark_pipeline(args: &[String]) -> Result<(), DynError> {
+    let flags = parse_flags(args)?;
+    let resolution = optional_usize(&flags, "--resolution", 64)?;
+    let bounds = optional_f64(&flags, "--bounds", 1.5)?;
+    let runs = optional_usize(&flags, "--runs", 3)?;
+    let radius = optional_f64(&flags, "--radius", 1.0)?;
+
+    let config = MarchingCubesConfig::new(
+        [-bounds, -bounds, -bounds],
+        [bounds, bounds, bounds],
+        [resolution, resolution, resolution],
+        0.0,
+    );
+    let step = (2.0 * bounds) / ((resolution - 1) as f64);
+
+    let mut eval_ms_total = 0.0_f64;
+    let mut mesh_ms_total = 0.0_f64;
+    let mut export_ms_total = 0.0_f64;
+    let mut total_ms_total = 0.0_f64;
+    let mut triangles = 0usize;
+    let mut bytes_len = 0usize;
+    let mut checksum = 0.0_f64;
+
+    for _ in 0..runs {
+        let total_start = Instant::now();
+        let sdf = sphere(radius);
+
+        let eval_start = Instant::now();
+        let mut acc = 0.0_f64;
+        for z in 0..resolution {
+            let pz = -bounds + (z as f64) * step;
+            for y in 0..resolution {
+                let py = -bounds + (y as f64) * step;
+                for x in 0..resolution {
+                    let px = -bounds + (x as f64) * step;
+                    acc += sdf.evaluate([px, py, pz]);
+                }
+            }
+        }
+        checksum += acc;
+        let eval_ms = eval_start.elapsed().as_secs_f64() * 1000.0;
+
+        let mesh_start = Instant::now();
+        let mesh = extract_mesh_with(&config, |point| sdf.evaluate(point));
+        let mesh_ms = mesh_start.elapsed().as_secs_f64() * 1000.0;
+
+        let export_start = Instant::now();
+        let bytes = to_binary_stl(&mesh, "benchmark");
+        let export_ms = export_start.elapsed().as_secs_f64() * 1000.0;
+
+        let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
+
+        triangles = mesh.triangles.len();
+        bytes_len = bytes.len();
+
+        eval_ms_total += eval_ms;
+        mesh_ms_total += mesh_ms;
+        export_ms_total += export_ms;
+        total_ms_total += total_ms;
+    }
+
+    let denom = runs as f64;
+    println!("runs {}", runs);
+    println!("resolution {}", resolution);
+    println!("triangles {}", triangles);
+    println!("bytes {}", bytes_len);
+    println!("eval_ms {:.6}", eval_ms_total / denom);
+    println!("mesh_ms {:.6}", mesh_ms_total / denom);
+    println!("export_ms {:.6}", export_ms_total / denom);
+    println!("total_ms {:.6}", total_ms_total / denom);
+    println!("checksum {:.17}", checksum);
     Ok(())
 }
 
@@ -466,6 +542,9 @@ fn print_usage() {
     );
     eprintln!(
         "  sdf-cli export-mesh --scene <sphere|union_sphere_box> --output <path> [--format <binary-stl|ascii-stl|obj>] [--name <str>] [--resolution <usize>] [--bounds <f64>]"
+    );
+    eprintln!(
+        "  sdf-cli benchmark-pipeline [--resolution <usize>] [--bounds <f64>] [--runs <usize>] [--radius <f64>]"
     );
 }
 

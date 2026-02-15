@@ -29,3 +29,7 @@ jobs:
         run: pip install -r oracle/requirements.txt
       - name: Compare Rust vs Python oracle
         run: python oracle/compare_results.py
+      - name: Mesh Oracle Checks
+        run: python oracle/mesh_oracle_checks.py
+      - name: Performance Budget Report
+        run: python oracle/performance_budget.py --enforce

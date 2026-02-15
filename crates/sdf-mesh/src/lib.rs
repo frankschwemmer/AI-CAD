@@ -1,3 +1,4 @@
+pub mod export;
 pub mod marching_cubes;
 mod tables;
 
@@ -18,6 +19,7 @@ impl Mesh {
 }
 
 pub use marching_cubes::{MarchingCubesConfig, extract_mesh_from_sdf, extract_mesh_with};
+pub use export::{to_ascii_stl, to_binary_stl, to_obj};
 
 #[cfg(test)]
 mod tests {
