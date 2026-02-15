@@ -1,0 +1,8 @@
+[package]
+name = "sdf-mesh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sdf-core = { path = "../sdf-core" }
