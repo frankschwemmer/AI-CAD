@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 sdf-core = { path = "../sdf-core" }
+sdf-mesh = { path = "../sdf-mesh" }

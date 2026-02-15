@@ -9,6 +9,7 @@ use sdf_core::{
     inverse_twist_z, mirror_point, negate, plane, repeat_point, rounded_box, rounded_cylinder,
     scale, shell, smooth_difference, smooth_intersection, smooth_union, sphere, torus, union,
 };
+use sdf_mesh::{MarchingCubesConfig, Mesh, extract_mesh_with, to_ascii_stl, to_binary_stl, to_obj};
 
 type DynError = Box<dyn Error>;
 type DynSdf = Box<dyn Sdf3>;
@@ -101,6 +102,8 @@ fn main() -> Result<(), DynError> {
         }),
         "evaluate-operation-scene" => run_evaluate_operation_scene(&args[1..]),
         "evaluate-transform-scene" => run_evaluate_transform_scene(&args[1..]),
+        "mesh-metrics" => run_mesh_metrics(&args[1..]),
+        "export-mesh" => run_export_mesh(&args[1..]),
         _ => {
             print_usage();
             Ok(())
@@ -237,6 +240,117 @@ fn evaluate_transform_scene_point(transform: &str, point: [f64; 3], flags: &Flag
     Ok(value)
 }
 
+fn run_mesh_metrics(args: &[String]) -> Result<(), DynError> {
+    let flags = parse_flags(args)?;
+    let mesh = build_scene_mesh(&flags)?;
+    let volume = mesh_volume(&mesh).abs();
+    let area = mesh_area(&mesh);
+
+    println!("vertices {}", mesh.vertices.len());
+    println!("triangles {}", mesh.triangles.len());
+    println!("volume {:.17}", volume);
+    println!("area {:.17}", area);
+    Ok(())
+}
+
+fn run_export_mesh(args: &[String]) -> Result<(), DynError> {
+    let flags = parse_flags(args)?;
+    let mesh = build_scene_mesh(&flags)?;
+    let output = required_str(&flags, "--output")?;
+    let format = optional_str(&flags, "--format", "binary-stl");
+    let name = optional_str(&flags, "--name", "mesh");
+
+    match format {
+        "binary-stl" => {
+            let bytes = to_binary_stl(&mesh, name);
+            fs::write(output, bytes)?;
+        }
+        "ascii-stl" => {
+            let text = to_ascii_stl(&mesh, name);
+            fs::write(output, text)?;
+        }
+        "obj" => {
+            let text = to_obj(&mesh);
+            fs::write(output, text)?;
+        }
+        _ => return Err(format!("unknown format: {format}").into()),
+    }
+
+    Ok(())
+}
+
+fn build_scene_mesh(flags: &Flags) -> Result<Mesh, DynError> {
+    let scene = optional_str(flags, "--scene", "sphere");
+    let resolution = optional_usize(flags, "--resolution", 64)?;
+    let bounds = optional_f64(flags, "--bounds", 1.5)?;
+    let config = MarchingCubesConfig::new(
+        [-bounds, -bounds, -bounds],
+        [bounds, bounds, bounds],
+        [resolution, resolution, resolution],
+        0.0,
+    );
+
+    let mesh = match scene {
+        "sphere" => {
+            let radius = optional_f64(flags, "--radius", 1.0)?;
+            extract_mesh_with(&config, |point| sphere(radius).evaluate(point))
+        }
+        "union_sphere_box" => extract_mesh_with(&config, |point| {
+            let a = sphere(1.0).evaluate(point);
+            let shifted = [point[0] - 0.35, point[1] + 0.15, point[2]];
+            let b = box3([0.8, 0.6, 0.9]).evaluate(shifted);
+            union(a, b)
+        }),
+        _ => return Err(format!("unknown scene: {scene}").into()),
+    };
+
+    Ok(mesh)
+}
+
+fn mesh_area(mesh: &Mesh) -> f64 {
+    mesh.triangles
+        .iter()
+        .map(|tri| {
+            triangle_area(
+                mesh.vertices[tri[0] as usize],
+                mesh.vertices[tri[1] as usize],
+                mesh.vertices[tri[2] as usize],
+            )
+        })
+        .sum()
+}
+
+fn mesh_volume(mesh: &Mesh) -> f64 {
+    mesh.triangles
+        .iter()
+        .map(|tri| {
+            let a = mesh.vertices[tri[0] as usize];
+            let b = mesh.vertices[tri[1] as usize];
+            let c = mesh.vertices[tri[2] as usize];
+            dot3(a, cross3(b, c)) / 6.0
+        })
+        .sum()
+}
+
+fn triangle_area(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let n = cross3(ab, ac);
+    (dot3(n, n)).sqrt() * 0.5
+}
+
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
 fn parse_flags(args: &[String]) -> Result<Flags, DynError> {
     if !args.len().is_multiple_of(2) {
         return Err("expected flag-value pairs".into());
@@ -271,6 +385,15 @@ fn required_f64(flags: &Flags, key: &str) -> Result<f64, DynError> {
         .map_err(|err| format!("invalid float for {key}: {err}").into())
 }
 
+fn optional_usize(flags: &Flags, key: &str, default: usize) -> Result<usize, DynError> {
+    match flags.get(key) {
+        Some(value) => value
+            .parse::<usize>()
+            .map_err(|err| format!("invalid usize for {key}: {err}").into()),
+        None => Ok(default),
+    }
+}
+
 fn optional_f64(flags: &Flags, key: &str, default: f64) -> Result<f64, DynError> {
     match flags.get(key) {
         Some(value) => value
@@ -278,6 +401,10 @@ fn optional_f64(flags: &Flags, key: &str, default: f64) -> Result<f64, DynError>
             .map_err(|err| format!("invalid float for {key}: {err}").into()),
         None => Ok(default),
     }
+}
+
+fn optional_str<'a>(flags: &'a Flags, key: &str, default: &'a str) -> &'a str {
+    flags.get(key).map(String::as_str).unwrap_or(default)
 }
 
 fn read_points(path: impl AsRef<Path>) -> Result<Vec<[f64; 3]>, DynError> {
@@ -334,13 +461,19 @@ fn print_usage() {
     eprintln!(
         "  sdf-cli evaluate-transform-scene --transform <name> --points-file <path> [transform params]"
     );
+    eprintln!(
+        "  sdf-cli mesh-metrics --scene <sphere|union_sphere_box> [--radius <f64>] [--resolution <usize>] [--bounds <f64>]"
+    );
+    eprintln!(
+        "  sdf-cli export-mesh --scene <sphere|union_sphere_box> --output <path> [--format <binary-stl|ascii-stl|obj>] [--name <str>] [--resolution <usize>] [--bounds <f64>]"
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluate_operation_scene_point, evaluate_transform_scene_point, parse_flags, read_points,
-        required_f64,
+        build_scene_mesh, evaluate_operation_scene_point, evaluate_transform_scene_point,
+        parse_flags, read_points, required_f64,
     };
 
     #[test]
@@ -395,5 +528,18 @@ mod tests {
         let value = evaluate_transform_scene_point("translate", [0.7, -0.4, 0.5], &flags)
             .expect("transform evaluation should succeed");
         assert!((value + 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn builds_sphere_mesh_from_flags() {
+        let args = vec![
+            "--scene".to_string(),
+            "sphere".to_string(),
+            "--resolution".to_string(),
+            "20".to_string(),
+        ];
+        let flags = parse_flags(&args).expect("flag parsing should succeed");
+        let mesh = build_scene_mesh(&flags).expect("mesh build should succeed");
+        assert!(!mesh.triangles.is_empty());
     }
 }
