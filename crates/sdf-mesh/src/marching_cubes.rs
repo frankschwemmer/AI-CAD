@@ -79,10 +79,10 @@ where
     let field = sample_grid(config, spacing, &mut sample);
 
     let mut mesh = Mesh::empty();
-    let mut vertex_cache = HashMap::<(u64, u64, u64), u32>::new();
+    let mut vertex_cache = HashMap::<(usize, usize, usize, u8), u32>::new();
     let mut corner_values = [0.0_f64; 8];
     let mut corner_points = [[0.0_f64; 3]; 8];
-    let mut edge_points = [[0.0_f64; 3]; 12];
+    let mut edge_indices = [0_u32; 12];
 
     for z in 0..(nz - 1) {
         for y in 0..(ny - 1) {
@@ -120,13 +120,15 @@ where
                         continue;
                     }
                     let [a, b] = EDGE_ENDPOINTS[edge_id];
-                    edge_points[edge_id] = interpolate_edge(
+                    let point = interpolate_edge(
                         corner_points[a],
                         corner_points[b],
                         corner_values[a],
                         corner_values[b],
                         config.iso_level,
                     );
+                    let key = edge_cache_key(x, y, z, edge_id);
+                    edge_indices[edge_id] = insert_vertex(&mut mesh, &mut vertex_cache, key, point);
                 }
 
                 let row = TRI_TABLE[case_index];
@@ -136,9 +138,9 @@ where
                     let e1 = row[tri_idx + 1] as usize;
                     let e2 = row[tri_idx + 2] as usize;
 
-                    let i0 = insert_vertex(&mut mesh, &mut vertex_cache, edge_points[e0]);
-                    let i1 = insert_vertex(&mut mesh, &mut vertex_cache, edge_points[e1]);
-                    let i2 = insert_vertex(&mut mesh, &mut vertex_cache, edge_points[e2]);
+                    let i0 = edge_indices[e0];
+                    let i1 = edge_indices[e1];
+                    let i2 = edge_indices[e2];
                     mesh.triangles.push([i0, i1, i2]);
 
                     tri_idx += 3;
@@ -197,10 +199,10 @@ fn interpolate_edge(p1: Point3, p2: Point3, v1: f64, v2: f64, iso: f64) -> Point
 #[inline]
 fn insert_vertex(
     mesh: &mut Mesh,
-    cache: &mut HashMap<(u64, u64, u64), u32>,
+    cache: &mut HashMap<(usize, usize, usize, u8), u32>,
+    key: (usize, usize, usize, u8),
     point: Point3,
 ) -> u32 {
-    let key = (point[0].to_bits(), point[1].to_bits(), point[2].to_bits());
     if let Some(index) = cache.get(&key).copied() {
         return index;
     }
@@ -208,6 +210,25 @@ fn insert_vertex(
     mesh.vertices.push(point);
     cache.insert(key, index);
     index
+}
+
+#[inline]
+fn edge_cache_key(x: usize, y: usize, z: usize, edge_id: usize) -> (usize, usize, usize, u8) {
+    match edge_id {
+        0 => (x, y, z, 0),
+        1 => (x + 1, y, z, 1),
+        2 => (x, y + 1, z, 0),
+        3 => (x, y, z, 1),
+        4 => (x, y, z + 1, 0),
+        5 => (x + 1, y, z + 1, 1),
+        6 => (x, y + 1, z + 1, 0),
+        7 => (x, y, z + 1, 1),
+        8 => (x, y, z, 2),
+        9 => (x + 1, y, z, 2),
+        10 => (x + 1, y + 1, z, 2),
+        11 => (x, y + 1, z, 2),
+        _ => unreachable!("edge id out of range"),
+    }
 }
 
 #[cfg(test)]
@@ -237,7 +258,8 @@ mod tests {
 
     #[test]
     fn sphere_mesh_matches_analytical_volume_and_area_approximately() {
-        let config = MarchingCubesConfig::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5], [32, 32, 32], 0.0);
+        let config =
+            MarchingCubesConfig::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5], [64, 64, 64], 0.0);
         let mesh = extract_mesh_from_sdf(&config, &sphere(1.0));
         assert!(!mesh.triangles.is_empty());
 
@@ -249,16 +271,18 @@ mod tests {
         let vol_rel = (volume - exact_volume).abs() / exact_volume;
         let area_rel = (area - exact_area).abs() / exact_area;
 
-        assert!(vol_rel < 0.1, "volume relative error too high: {vol_rel:.4}");
-        assert!(area_rel < 0.12, "area relative error too high: {area_rel:.4}");
+        assert!(vol_rel < 0.01, "volume relative error too high: {vol_rel:.4}");
+        assert!(area_rel < 0.02, "area relative error too high: {area_rel:.4}");
     }
 
     #[test]
     fn sphere_volume_error_converges_with_resolution() {
         let exact_volume = 4.0 * PI / 3.0;
         let config_low = MarchingCubesConfig::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5], [16, 16, 16], 0.0);
-        let config_mid = MarchingCubesConfig::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5], [24, 24, 24], 0.0);
-        let config_high = MarchingCubesConfig::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5], [32, 32, 32], 0.0);
+        let config_mid =
+            MarchingCubesConfig::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5], [48, 48, 48], 0.0);
+        let config_high =
+            MarchingCubesConfig::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5], [64, 64, 64], 0.0);
 
         let e_low = (mesh_volume(&extract_mesh_from_sdf(&config_low, &sphere(1.0))).abs() - exact_volume).abs();
         let e_mid = (mesh_volume(&extract_mesh_from_sdf(&config_mid, &sphere(1.0))).abs() - exact_volume).abs();
@@ -298,6 +322,22 @@ mod tests {
         for (edge, count) in edge_counts {
             assert_eq!(count, 2, "non-manifold edge {:?} has count {}", edge, count);
         }
+    }
+
+    #[test]
+    #[ignore = "benchmark-style test for manual runs"]
+    fn benchmark_sphere_128_under_500ms() {
+        let config =
+            MarchingCubesConfig::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5], [128, 128, 128], 0.0);
+        let start = std::time::Instant::now();
+        let mesh = extract_mesh_from_sdf(&config, &sphere(1.0));
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert!(!mesh.triangles.is_empty());
+        assert!(
+            elapsed_ms < 500.0,
+            "expected <500ms, got {:.2}ms",
+            elapsed_ms
+        );
     }
 
     fn ordered_edge(a: u32, b: u32) -> (u32, u32) {
