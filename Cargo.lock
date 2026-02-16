@@ -15,6 +15,14 @@ name = "sdf-core"
 version = "0.1.0"
 
 [[package]]
+name = "sdf-dsl"
+version = "0.1.0"
+dependencies = [
+ "sdf-core",
+ "sdf-mesh",
+]
+
+[[package]]
 name = "sdf-mesh"
 version = "0.1.0"
 dependencies = [

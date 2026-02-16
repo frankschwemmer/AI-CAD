@@ -3,6 +3,7 @@ members = [
     "crates/sdf-core",
     "crates/sdf-mesh",
     "crates/sdf-cli",
+    "crates/sdf-dsl",
 ]
 resolver = "2"
 

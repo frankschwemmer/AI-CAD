@@ -1,0 +1,11 @@
+[package]
+name = "sdf-dsl"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+sdf-core = { path = "../sdf-core" }
+
+[dev-dependencies]
+sdf-mesh = { path = "../sdf-mesh" }
