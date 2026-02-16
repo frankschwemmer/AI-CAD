@@ -6,6 +6,4 @@ version.workspace = true
 
 [dependencies]
 sdf-core = { path = "../sdf-core" }
-
-[dev-dependencies]
 sdf-mesh = { path = "../sdf-mesh" }

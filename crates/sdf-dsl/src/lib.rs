@@ -9,6 +9,7 @@ use sdf_core::{
     inverse_twist_z, mirror_point, negate, plane, rounded_cylinder, shell, smooth_difference,
     smooth_intersection, smooth_union, torus, union,
 };
+use sdf_mesh::{MarchingCubesConfig, Mesh, extract_mesh_with};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DslError {
@@ -219,14 +220,7 @@ impl CompiledScene {
 
 impl Scene {
     pub fn evaluate(&self, point: [f64; 3]) -> Result<f64, DslError> {
-        self.ensure_compiled()?;
-        let compiled = self.compiled.borrow();
-        let node = match compiled.as_ref() {
-            Some(Ok(node)) => node,
-            Some(Err(err)) => return Err(err.clone()),
-            None => return Err(DslError::new("internal error: missing compiled scene")),
-        };
-        Ok(node.evaluate(point))
+        Ok(self.compiled_node()?.evaluate(point))
     }
 
     pub fn parameters(&self) -> &BTreeMap<String, f64> {
@@ -238,23 +232,67 @@ impl Scene {
     }
 
     pub fn set_param(&mut self, name: &str, value: f64) -> Result<(), DslError> {
-        let slot = self
+        let old_value = self
             .params
-            .get_mut(name)
+            .get(name)
+            .copied()
             .ok_or_else(|| DslError::new(format!("unknown parameter '{name}'")))?;
-        *slot = value;
+        self.params.insert(name.to_string(), value);
         *self.compiled.borrow_mut() = None;
-        Ok(())
+
+        let compiled = self.root.materialize(&self.params);
+        match compiled {
+            Ok(node) => {
+                *self.compiled.borrow_mut() = Some(Ok(node));
+                Ok(())
+            }
+            Err(err) => {
+                self.params.insert(name.to_string(), old_value);
+                *self.compiled.borrow_mut() = None;
+                Err(DslError::new(format!(
+                    "invalid value for parameter '{name}': {err}"
+                )))
+            }
+        }
     }
 
     pub fn compile_current(&self) -> Result<CompiledScene, DslError> {
-        self.ensure_compiled()?;
-        let compiled = self.compiled.borrow();
-        match compiled.as_ref() {
-            Some(Ok(node)) => Ok(CompiledScene { root: node.clone() }),
-            Some(Err(err)) => Err(err.clone()),
-            None => Err(DslError::new("internal error: missing compiled scene")),
+        Ok(CompiledScene {
+            root: self.compiled_node()?.clone(),
+        })
+    }
+
+    pub fn evaluate_mesh(&self, resolution: usize) -> Result<Mesh, DslError> {
+        let bounds = self.estimated_bounds();
+        self.evaluate_mesh_with_bounds(
+            resolution,
+            [-bounds, -bounds, -bounds],
+            [bounds, bounds, bounds],
+        )
+    }
+
+    pub fn evaluate_mesh_with_bounds(
+        &self,
+        resolution: usize,
+        min: [f64; 3],
+        max: [f64; 3],
+    ) -> Result<Mesh, DslError> {
+        if resolution < 2 {
+            return Err(DslError::new(
+                "resolution must be at least 2 for marching cubes",
+            ));
         }
+        for axis in 0..3 {
+            if max[axis] <= min[axis] {
+                return Err(DslError::new(format!(
+                    "invalid mesh bounds on axis {axis}: min must be less than max"
+                )));
+            }
+        }
+
+        let compiled = self.compile_current()?;
+        let config = MarchingCubesConfig::new(min, max, [resolution, resolution, resolution], 0.0);
+        Ok(extract_mesh_with(&config, |point| compiled.evaluate(point)))
     }
 
     fn ensure_compiled(&self) -> Result<(), DslError> {
@@ -269,6 +307,27 @@ impl Scene {
             Some(Err(err)) => Err(err.clone()),
             None => Err(DslError::new("internal error: missing compiled scene")),
         }
+    }
+
+    fn compiled_node(&self) -> Result<std::cell::Ref<'_, NumericNode>, DslError> {
+        self.ensure_compiled()?;
+        let compiled = self.compiled.borrow();
+        if let Some(Err(err)) = compiled.as_ref() {
+            return Err(err.clone());
+        }
+        Ok(std::cell::Ref::map(compiled, |entry| match entry {
+            Some(Ok(node)) => node,
+            Some(Err(_)) => unreachable!("error handled above"),
+            None => unreachable!("compiled cache populated by ensure_compiled"),
+        }))
+    }
+
+    fn estimated_bounds(&self) -> f64 {
+        let mut max_abs = 0.0f64;
+        for value in self.params.values() {
+            max_abs = max_abs.max(value.abs());
+        }
+        (max_abs * 2.0 + 10.0).clamp(10.0, 500.0)
     }
 }
 
@@ -2186,33 +2245,7 @@ mod tests {
 
     #[test]
     fn phone_stand_program_parses_and_meshes() {
-        let source = r#"
-            // Phone stand with 15-degree tilt
-            params {
-              width = 80mm
-              depth = 60mm
-              height = 100mm
-              tilt_angle = 15deg
-              thickness = 3mm
-              slot_width = 12mm
-              fillet_radius = 2mm
-            }
-
-            base = rounded_box(width, depth, thickness, fillet_radius)
-
-            back_wall = rounded_box(width, thickness, height, fillet_radius)
-              |> translate(0, -depth/2 + thickness/2, height/2 - thickness/2)
-              |> rotate_x(tilt_angle)
-
-            slot = rounded_box(slot_width, thickness * 2, height * 0.6, 1mm)
-              |> translate(0, -depth/2, height * 0.3)
-              |> rotate_x(tilt_angle)
-
-            result = smooth_union(base, back_wall, 3mm)
-              |> difference(slot)
-        "#;
-
-        let scene = compile_dsl(source).expect("phone stand should compile");
+        let scene = compile_dsl(phone_stand_source()).expect("phone stand should compile");
         let config = MarchingCubesConfig::new(
             [-60.0, -60.0, -40.0],
             [60.0, 60.0, 120.0],
@@ -2445,6 +2478,169 @@ mod tests {
         );
     }
 
+    #[test]
+    fn set_param_changes_sdf_value_for_sphere_radius() {
+        let mut scene = compile_dsl(
+            r#"
+            params {
+              radius = 10mm
+            }
+            sphere(radius)
+            "#,
+        )
+        .expect("scene should compile");
+
+        let initial = scene
+            .evaluate([0.0, 0.0, 0.0])
+            .expect("initial evaluation should succeed");
+        assert!((initial + 10.0).abs() < 1e-12);
+
+        scene
+            .set_param("radius", 20.0)
+            .expect("set_param should succeed");
+        let updated = scene
+            .evaluate([0.0, 0.0, 0.0])
+            .expect("updated evaluation should succeed");
+        assert!((updated + 20.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn set_param_invalid_name_returns_error() {
+        let mut scene = compile_dsl(
+            r#"
+            params {
+              radius = 10mm
+            }
+            sphere(radius)
+            "#,
+        )
+        .expect("scene should compile");
+
+        let err = scene
+            .set_param("not_a_param", 5.0)
+            .expect_err("set_param should fail");
+        assert!(err.to_string().contains("unknown parameter 'not_a_param'"));
+    }
+
+    #[test]
+    fn set_param_rejects_out_of_range_value() {
+        let mut scene = compile_dsl(
+            r#"
+            params {
+              radius = 10mm
+            }
+            sphere(radius)
+            "#,
+        )
+        .expect("scene should compile");
+
+        let err = scene
+            .set_param("radius", -1.0)
+            .expect_err("set_param should fail");
+        let text = err.to_string();
+        assert!(text.contains("invalid value for parameter 'radius'"));
+        assert!(text.contains("sphere radius must be non-negative"));
+
+        let radius = scene
+            .parameter("radius")
+            .expect("radius should still exist");
+        assert!((radius - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn phone_stand_five_param_changes_adjust_volume_proportionally() {
+        let mut scene = compile_dsl(phone_stand_source()).expect("phone stand should compile");
+        let base_mesh = scene
+            .evaluate_mesh_with_bounds(56, [-60.0, -60.0, -40.0], [60.0, 60.0, 120.0])
+            .expect("baseline mesh evaluation should succeed");
+        let base_volume = mesh_volume(&base_mesh).abs();
+
+        scene
+            .set_param("width", 96.0)
+            .expect("width update should succeed");
+        scene
+            .set_param("depth", 72.0)
+            .expect("depth update should succeed");
+        scene
+            .set_param("height", 120.0)
+            .expect("height update should succeed");
+        scene
+            .set_param("thickness", 3.6)
+            .expect("thickness update should succeed");
+        scene
+            .set_param("slot_width", 14.4)
+            .expect("slot width update should succeed");
+
+        let updated_mesh = scene
+            .evaluate_mesh_with_bounds(56, [-75.0, -75.0, -50.0], [75.0, 75.0, 150.0])
+            .expect("updated mesh evaluation should succeed");
+        let updated_volume = mesh_volume(&updated_mesh).abs();
+
+        let measured_ratio = updated_volume / base_volume;
+        let expected_ratio = (96.0 * 72.0 * 120.0) / (80.0 * 60.0 * 100.0);
+        let relative_error = ((measured_ratio - expected_ratio) / expected_ratio).abs();
+
+        assert!(
+            relative_error < 0.35,
+            "volume ratio should track scale changes: measured={measured_ratio:.3}, expected={expected_ratio:.3}, rel_error={relative_error:.3}"
+        );
+    }
+
+    #[test]
+    fn param_change_and_reevaluate_64_cubed_within_budget() {
+        let mut scene = compile_dsl(phone_stand_source()).expect("phone stand should compile");
+        let start = Instant::now();
+        scene
+            .set_param("width", 90.0)
+            .expect("parameter update should succeed");
+        let mesh = scene
+            .evaluate_mesh_with_bounds(64, [-70.0, -70.0, -45.0], [70.0, 70.0, 135.0])
+            .expect("mesh evaluation should succeed");
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let limit_ms = if cfg!(debug_assertions) { 2500.0 } else { 200.0 };
+
+        assert!(!mesh.triangles.is_empty());
+        assert!(
+            elapsed_ms < limit_ms,
+            "parameter change + 64^3 re-evaluate exceeded budget: elapsed={elapsed_ms:.3}ms limit={limit_ms:.1}ms"
+        );
+    }
+
+    #[test]
+    fn setting_param_and_reverting_produces_bit_identical_mesh() {
+        let mut scene = compile_dsl(
+            r#"
+            params {
+              radius = 10mm
+            }
+            sphere(radius)
+            "#,
+        )
+        .expect("scene should compile");
+
+        let before = scene
+            .evaluate_mesh_with_bounds(64, [-12.0, -12.0, -12.0], [12.0, 12.0, 12.0])
+            .expect("initial mesh should evaluate");
+        let before_stl = to_binary_stl(&before, "sphere");
+
+        scene
+            .set_param("radius", 12.0)
+            .expect("intermediate parameter update should succeed");
+        let _ = scene
+            .evaluate_mesh_with_bounds(64, [-14.0, -14.0, -14.0], [14.0, 14.0, 14.0])
+            .expect("intermediate mesh should evaluate");
+
+        scene
+            .set_param("radius", 10.0)
+            .expect("revert parameter update should succeed");
+        let after = scene
+            .evaluate_mesh_with_bounds(64, [-12.0, -12.0, -12.0], [12.0, 12.0, 12.0])
+            .expect("reverted mesh should evaluate");
+        let after_stl = to_binary_stl(&after, "sphere");
+
+        assert_eq!(before_stl, after_stl);
+    }
+
     fn watertight_stats(mesh: &Mesh) -> (bool, usize) {
         let mut edges: HashMap<(u32, u32), usize> = HashMap::new();
 
@@ -2485,6 +2681,34 @@ mod tests {
 
     fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
         a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+
+    fn phone_stand_source() -> &'static str {
+        r#"
+            // Phone stand with 15-degree tilt
+            params {
+              width = 80mm
+              depth = 60mm
+              height = 100mm
+              tilt_angle = 15deg
+              thickness = 3mm
+              slot_width = 12mm
+              fillet_radius = 2mm
+            }
+
+            base = rounded_box(width, depth, thickness, fillet_radius)
+
+            back_wall = rounded_box(width, thickness, height, fillet_radius)
+              |> translate(0, -depth/2 + thickness/2, height/2 - thickness/2)
+              |> rotate_x(tilt_angle)
+
+            slot = rounded_box(slot_width, thickness * 2, height * 0.6, 1mm)
+              |> translate(0, -depth/2, height * 0.3)
+              |> rotate_x(tilt_angle)
+
+            result = smooth_union(base, back_wall, 3mm)
+              |> difference(slot)
+        "#
     }
 
     fn manual_union_scene(point: [f64; 3]) -> f64 {
