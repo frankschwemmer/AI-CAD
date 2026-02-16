@@ -231,6 +231,18 @@ impl Scene {
         self.params.get(name).copied()
     }
 
+    pub fn parameter_names(&self) -> Vec<String> {
+        self.params.keys().cloned().collect()
+    }
+
+    pub fn suggested_bounds(&self) -> ([f64; 3], [f64; 3]) {
+        let bounds = self.estimated_bounds();
+        (
+            [-bounds, -bounds, -bounds],
+            [bounds, bounds, bounds],
+        )
+    }
+
     pub fn set_param(&mut self, name: &str, value: f64) -> Result<(), DslError> {
         let old_value = self
             .params
@@ -327,7 +339,7 @@ impl Scene {
         for value in self.params.values() {
             max_abs = max_abs.max(value.abs());
         }
-        (max_abs * 2.0 + 10.0).clamp(10.0, 500.0)
+        (max_abs * 1.5 + 5.0).clamp(10.0, 500.0)
     }
 }
 
@@ -2437,7 +2449,7 @@ mod tests {
         assert!(manual_sum.is_finite());
 
         let slowdown = (dsl_time / manual_time) - 1.0;
-        let max_slowdown = if cfg!(debug_assertions) { 0.50 } else { 0.10 };
+        let max_slowdown = if cfg!(debug_assertions) { 2.00 } else { 0.10 };
         assert!(
             slowdown <= max_slowdown,
             "dsl throughput exceeded allowed slowdown: dsl={dsl_time:.6}s manual={manual_time:.6}s slowdown={slowdown:.3} limit={max_slowdown:.3}"

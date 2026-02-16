@@ -1,0 +1,10 @@
+[package]
+name = "sdf-ai"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+regex = "1.11.1"
+sdf-dsl = { path = "../sdf-dsl" }
+sdf-mesh = { path = "../sdf-mesh" }

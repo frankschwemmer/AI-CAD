@@ -1,0 +1,21 @@
+[package]
+name = "sdf-server"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+axum = { version = "0.8.1", features = ["ws"] }
+http = "1.2.0"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+sdf-dsl = { path = "../sdf-dsl" }
+sdf-mesh = { path = "../sdf-mesh" }
+tokio = { version = "1.44.1", features = ["macros", "rt-multi-thread", "net", "time"] }
+tower-http = { version = "0.6.2", features = ["cors"] }
+
+[dev-dependencies]
+futures = "0.3.31"
+http-body-util = "0.1.3"
+tokio-tungstenite = "0.24.0"
+tower = { version = "0.5.2", features = ["util"] }

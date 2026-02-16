@@ -4,6 +4,8 @@ members = [
     "crates/sdf-mesh",
     "crates/sdf-cli",
     "crates/sdf-dsl",
+    "crates/sdf-server",
+    "crates/sdf-ai",
 ]
 resolver = "2"
 
