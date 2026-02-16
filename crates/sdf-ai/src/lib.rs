@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Instant;
 
-use regex::Regex;
 use sdf_dsl::compile_dsl;
 use sdf_mesh::Mesh;
 
@@ -437,7 +436,9 @@ impl fmt::Display for ConstraintEnforcementError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ConstraintEnforcementError::Generation(err) => write!(f, "{err}"),
-            ConstraintEnforcementError::Analysis(message) => write!(f, "analysis failed: {message}"),
+            ConstraintEnforcementError::Analysis(message) => {
+                write!(f, "analysis failed: {message}")
+            }
             ConstraintEnforcementError::Unsatisfied { attempts, .. } => write!(
                 f,
                 "constraints were not satisfied after {attempts} adjustment attempt(s)"
@@ -456,91 +457,73 @@ impl From<GenerationError> for ConstraintEnforcementError {
 
 pub fn extract_dimensional_constraints(prompt: &str) -> Vec<DimensionalConstraint> {
     let mut constraints = Vec::new();
-    let text = prompt.to_lowercase();
+    let tokens = tokenize_prompt(prompt);
 
-    let cube_re = Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*mm\s*cube").expect("valid regex");
-    if let Some(captures) = cube_re.captures(&text) {
-        if let Ok(size) = captures[1].parse::<f64>() {
-            constraints.push(DimensionalConstraint::AxisExtent {
-                axis: Axis::X,
-                target_mm: size,
-                tolerance_mm: 1.0,
-            });
-            constraints.push(DimensionalConstraint::AxisExtent {
-                axis: Axis::Y,
-                target_mm: size,
-                tolerance_mm: 1.0,
-            });
-            constraints.push(DimensionalConstraint::AxisExtent {
-                axis: Axis::Z,
-                target_mm: size,
-                tolerance_mm: 1.0,
-            });
-        }
-    }
-
-    let cylinder_re =
-        Regex::new(r"(?i)cylinder\s+(\d+(?:\.\d+)?)\s*mm\s*diameter[,\s]+(\d+(?:\.\d+)?)\s*mm\s*tall")
-            .expect("valid regex");
-    if let Some(captures) = cylinder_re.captures(&text) {
-        if let (Ok(diameter), Ok(height)) = (captures[1].parse::<f64>(), captures[2].parse::<f64>())
-        {
-            constraints.push(DimensionalConstraint::AxisExtent {
-                axis: Axis::X,
-                target_mm: diameter,
-                tolerance_mm: 1.0,
-            });
-            constraints.push(DimensionalConstraint::AxisExtent {
-                axis: Axis::Y,
-                target_mm: diameter,
-                tolerance_mm: 1.0,
-            });
-            constraints.push(DimensionalConstraint::AxisExtent {
-                axis: Axis::Z,
-                target_mm: height,
-                tolerance_mm: 1.0,
-            });
-        }
-    }
-
-    let exact_width_re =
-        Regex::new(r"(?i)exactly\s*(\d+(?:\.\d+)?)\s*mm\s*wide").expect("valid regex");
-    if let Some(captures) = exact_width_re.captures(&text) {
-        if let Ok(width) = captures[1].parse::<f64>() {
-            constraints.push(DimensionalConstraint::AxisExtent {
-                axis: Axis::X,
-                target_mm: width,
-                tolerance_mm: 0.5,
-            });
-        }
-    } else {
-        let width_re = Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*mm\s*wide").expect("valid regex");
-        if let Some(captures) = width_re.captures(&text) {
-            if let Ok(width) = captures[1].parse::<f64>() {
+    if let Some(cube_idx) = tokens.iter().position(|token| token == "cube") {
+        if let Some(size) = parse_unit_before(&tokens, cube_idx, "mm") {
+            for axis in [Axis::X, Axis::Y, Axis::Z] {
                 constraints.push(DimensionalConstraint::AxisExtent {
-                    axis: Axis::X,
-                    target_mm: width,
+                    axis,
+                    target_mm: size,
                     tolerance_mm: 1.0,
                 });
             }
         }
     }
 
-    let wall_re =
-        Regex::new(r"(?i)wall thickness\s*(\d+(?:\.\d+)?)\s*mm").expect("valid regex");
-    if let Some(captures) = wall_re.captures(&text) {
-        if let Ok(thickness) = captures[1].parse::<f64>() {
-            constraints.push(DimensionalConstraint::WallThickness {
-                target_mm: thickness,
-                tolerance_mm: 0.75,
+    let cylinder_idx = tokens.iter().position(|token| token == "cylinder");
+    let diameter_idx = tokens.iter().position(|token| token == "diameter");
+    let tall_idx = tokens.iter().position(|token| token == "tall");
+    if let (Some(cyl_i), Some(diam_i), Some(tall_i)) = (cylinder_idx, diameter_idx, tall_idx) {
+        if cyl_i < diam_i && diam_i < tall_i {
+            if let (Some(diameter), Some(height)) = (
+                parse_unit_before(&tokens, diam_i, "mm"),
+                parse_unit_before(&tokens, tall_i, "mm"),
+            ) {
+                constraints.push(DimensionalConstraint::AxisExtent {
+                    axis: Axis::X,
+                    target_mm: diameter,
+                    tolerance_mm: 1.0,
+                });
+                constraints.push(DimensionalConstraint::AxisExtent {
+                    axis: Axis::Y,
+                    target_mm: diameter,
+                    tolerance_mm: 1.0,
+                });
+                constraints.push(DimensionalConstraint::AxisExtent {
+                    axis: Axis::Z,
+                    target_mm: height,
+                    tolerance_mm: 1.0,
+                });
+            }
+        }
+    }
+
+    if let Some(wide_idx) = tokens.iter().position(|token| token == "wide") {
+        if let Some(width) = parse_unit_before(&tokens, wide_idx, "mm") {
+            let exact = tokens[..wide_idx].iter().any(|token| token == "exactly");
+            constraints.push(DimensionalConstraint::AxisExtent {
+                axis: Axis::X,
+                target_mm: width,
+                tolerance_mm: if exact { 0.5 } else { 1.0 },
             });
         }
     }
 
-    let tilt_re =
-        Regex::new(r"(?i)(\d+(?:\.\d+)?)\s*(?:degree|deg)\s*tilt").expect("valid regex");
-    if let Some(captures) = tilt_re.captures(&text) {
-        if let Ok(tilt_deg) = captures[1].parse::<f64>() {
+    if let Some(thickness_idx) = tokens.iter().position(|token| token == "thickness") {
+        let has_wall = thickness_idx > 0 && tokens[thickness_idx - 1] == "wall";
+        if has_wall {
+            if let Some(thickness) = parse_unit_after(&tokens, thickness_idx, "mm") {
+                constraints.push(DimensionalConstraint::WallThickness {
+                    target_mm: thickness,
+                    tolerance_mm: 0.75,
+                });
+            }
+        }
+    }
+
+    if let Some(tilt_idx) = tokens.iter().position(|token| token == "tilt") {
+        if let Some(tilt_deg) = parse_degrees_before(&tokens, tilt_idx) {
             constraints.push(DimensionalConstraint::TiltFromVertical {
                 target_deg: tilt_deg,
                 tolerance_deg: 1.5,
@@ -549,6 +532,82 @@ pub fn extract_dimensional_constraints(prompt: &str) -> Vec<DimensionalConstrain
     }
 
     constraints
+}
+
+fn tokenize_prompt(prompt: &str) -> Vec<String> {
+    let normalized = prompt
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '.' {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+    normalized
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+}
+
+fn parse_unit_before(tokens: &[String], keyword_idx: usize, unit: &str) -> Option<f64> {
+    if keyword_idx == 0 {
+        return None;
+    }
+    parse_unit_token(tokens, keyword_idx - 1, unit).or_else(|| {
+        if keyword_idx >= 2 && tokens[keyword_idx - 1] == unit {
+            parse_number_token(&tokens[keyword_idx - 2])
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_unit_after(tokens: &[String], keyword_idx: usize, unit: &str) -> Option<f64> {
+    if keyword_idx + 1 >= tokens.len() {
+        return None;
+    }
+    parse_unit_token(tokens, keyword_idx + 1, unit).or_else(|| {
+        if keyword_idx + 2 < tokens.len() && tokens[keyword_idx + 2] == unit {
+            parse_number_token(&tokens[keyword_idx + 1])
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_unit_token(tokens: &[String], idx: usize, unit: &str) -> Option<f64> {
+    let token = &tokens[idx];
+    if token.ends_with(unit) && token.len() > unit.len() {
+        parse_number_token(&token[..token.len() - unit.len()])
+    } else {
+        None
+    }
+}
+
+fn parse_degrees_before(tokens: &[String], keyword_idx: usize) -> Option<f64> {
+    if keyword_idx == 0 {
+        return None;
+    }
+
+    let prev = &tokens[keyword_idx - 1];
+    if prev.ends_with("deg") && prev.len() > 3 {
+        return parse_number_token(&prev[..prev.len() - 3]);
+    }
+    if prev.ends_with("degree") && prev.len() > 6 {
+        return parse_number_token(&prev[..prev.len() - 6]);
+    }
+    if prev == "deg" || prev == "degree" || prev == "degrees" {
+        if keyword_idx >= 2 {
+            return parse_number_token(&tokens[keyword_idx - 2]);
+        }
+    }
+    parse_number_token(prev)
+}
+
+fn parse_number_token(token: &str) -> Option<f64> {
+    token.parse::<f64>().ok()
 }
 
 pub fn verify_constraints_for_dsl(
@@ -598,8 +657,9 @@ pub fn enforce_constraints_with_retries<C: LanguageModel>(
     generation_attempts += generated.attempts;
 
     loop {
-        let report = verify_constraints_for_dsl(&generated.dsl, generator.mesh_resolution(), constraints)
-            .map_err(ConstraintEnforcementError::Analysis)?;
+        let report =
+            verify_constraints_for_dsl(&generated.dsl, generator.mesh_resolution(), constraints)
+                .map_err(ConstraintEnforcementError::Analysis)?;
         if report.all_satisfied {
             return Ok(ConstraintConverged {
                 dsl: generated.dsl,
@@ -909,7 +969,8 @@ fn check_constraint(
 }
 
 fn build_adjustment_feedback(constraints: &[DimensionalConstraint]) -> String {
-    let mut lines = vec!["Adjust the current DSL to satisfy these dimensional constraints:".to_string()];
+    let mut lines =
+        vec!["Adjust the current DSL to satisfy these dimensional constraints:".to_string()];
     for constraint in constraints {
         match constraint {
             DimensionalConstraint::AxisExtent {
@@ -1154,10 +1215,10 @@ mod tests {
     use std::collections::{BTreeMap, VecDeque};
 
     use super::{
-        Axis, CANONICAL_PROMPTS, ConstraintAdjustmentConfig, ConstraintEnforcementError,
-        ConversationEngine, DslGenerator, GenerationConfig, GenerationRequest, LanguageModel,
-        canonical_prompts, default_system_prompt, enforce_constraints_with_retries,
-        evaluate_prompt_suite, extract_dimensional_constraints, verify_constraints_for_dsl,
+        Axis, CANONICAL_PROMPTS, ConstraintAdjustmentConfig, ConversationEngine, DslGenerator,
+        GenerationConfig, GenerationRequest, LanguageModel, canonical_prompts,
+        default_system_prompt, enforce_constraints_with_retries, evaluate_prompt_suite,
+        extract_dimensional_constraints, verify_constraints_for_dsl,
     };
 
     #[derive(Debug, Clone)]
@@ -1525,6 +1586,204 @@ result = union(base, upright)
             (ratio - 2.0).abs() <= 0.2,
             "expected width ratio near 2x (±10%), got {ratio:.3}"
         );
+    }
+
+    #[test]
+    fn dimensional_constraints_validate_50mm_cube_bbox() {
+        let prompt = "a 50mm cube";
+        let constraints = extract_dimensional_constraints(prompt);
+        assert_eq!(constraints.len(), 3);
+
+        let report = verify_constraints_for_dsl(cube_50_dsl(), 48, &constraints)
+            .expect("constraint verification should succeed");
+        assert!(
+            report.all_satisfied,
+            "cube checks failed: {:?}",
+            report.checks
+        );
+        assert_approx(
+            report.analysis.bbox_max[0] - report.analysis.bbox_min[0],
+            50.0,
+            1.0,
+        );
+        assert_approx(
+            report.analysis.bbox_max[1] - report.analysis.bbox_min[1],
+            50.0,
+            1.0,
+        );
+        assert_approx(
+            report.analysis.bbox_max[2] - report.analysis.bbox_min[2],
+            50.0,
+            1.0,
+        );
+    }
+
+    #[test]
+    fn dimensional_constraints_validate_cylinder_dimensions() {
+        let prompt = "cylinder 30mm diameter 80mm tall";
+        let constraints = extract_dimensional_constraints(prompt);
+        assert_eq!(constraints.len(), 3);
+
+        let report = verify_constraints_for_dsl(cylinder_30x80_dsl(), 56, &constraints)
+            .expect("constraint verification should succeed");
+        assert!(
+            report.all_satisfied,
+            "cylinder checks failed: {:?}",
+            report.checks
+        );
+        assert_approx(
+            report.analysis.bbox_max[0] - report.analysis.bbox_min[0],
+            30.0,
+            1.0,
+        );
+        assert_approx(
+            report.analysis.bbox_max[1] - report.analysis.bbox_min[1],
+            30.0,
+            1.0,
+        );
+        assert_approx(
+            report.analysis.bbox_max[2] - report.analysis.bbox_min[2],
+            80.0,
+            1.0,
+        );
+    }
+
+    #[test]
+    fn dimensional_constraints_validate_wall_thickness_via_ray_cast() {
+        let prompt = "hollow it out with wall thickness 3mm";
+        let constraints = extract_dimensional_constraints(prompt);
+        assert_eq!(constraints.len(), 1);
+
+        let report = verify_constraints_for_dsl(shell_wall_3mm_dsl(), 64, &constraints)
+            .expect("constraint verification should succeed");
+        assert!(
+            report.all_satisfied,
+            "wall thickness checks failed: {:?}",
+            report.checks
+        );
+
+        let check = report
+            .checks
+            .iter()
+            .find(|check| {
+                matches!(
+                    check.constraint,
+                    super::DimensionalConstraint::WallThickness { .. }
+                )
+            })
+            .expect("wall thickness check should exist");
+        let measured = check.measured.expect("wall thickness should be measurable");
+        assert_approx(measured, 3.0, 0.8);
+    }
+
+    #[test]
+    fn dimensional_constraints_validate_15_degree_tilt() {
+        let prompt = "apply a 15 degree tilt";
+        let constraints = extract_dimensional_constraints(prompt);
+        assert_eq!(constraints.len(), 1);
+
+        let report = verify_constraints_for_dsl(tilted_15deg_dsl(), 56, &constraints)
+            .expect("constraint verification should succeed");
+        assert!(
+            report.all_satisfied,
+            "tilt checks failed: {:?}",
+            report.checks
+        );
+
+        let check = report
+            .checks
+            .iter()
+            .find(|check| {
+                matches!(
+                    check.constraint,
+                    super::DimensionalConstraint::TiltFromVertical { .. }
+                )
+            })
+            .expect("tilt check should exist");
+        let measured = check.measured.expect("tilt should be measurable");
+        assert_approx(measured, 15.0, 1.5);
+    }
+
+    #[test]
+    fn exact_width_constraint_auto_adjusts_and_retries() {
+        let prompt = "make it exactly 42mm wide.";
+        let constraints = extract_dimensional_constraints(prompt);
+        assert_eq!(constraints.len(), 1);
+        assert!(matches!(
+            constraints[0],
+            super::DimensionalConstraint::AxisExtent {
+                axis: Axis::X,
+                target_mm,
+                tolerance_mm
+            } if (target_mm - 42.0).abs() < 1e-9 && (tolerance_mm - 0.5).abs() < 1e-9
+        ));
+
+        let feedback = super::build_adjustment_feedback(&constraints);
+        let model = ScriptedModel::default()
+            .with_response(prompt, vec![width_40_dsl()])
+            .with_response(&feedback, vec![width_42_dsl()]);
+        let mut generator = DslGenerator::new(
+            model,
+            GenerationConfig {
+                max_retries: 3,
+                mesh_resolution: 48,
+            },
+        );
+
+        let converged = enforce_constraints_with_retries(
+            &mut generator,
+            prompt,
+            &constraints,
+            ConstraintAdjustmentConfig {
+                max_adjustment_rounds: 2,
+            },
+        )
+        .expect("constraint adjustment should converge");
+
+        assert_eq!(converged.adjustment_rounds, 1);
+        assert!(converged.report.all_satisfied);
+        let width = converged.report.analysis.bbox_max[0] - converged.report.analysis.bbox_min[0];
+        assert_approx(width, 42.0, 0.5);
+
+        let model = generator.into_client();
+        let second = model
+            .logs
+            .iter()
+            .find(|log| log.prompt == feedback)
+            .expect("adjustment prompt call should be logged");
+        assert!(
+            second.current_dsl.is_some(),
+            "adjustment retry should include current DSL context"
+        );
+    }
+
+    #[test]
+    fn property_constraints_are_extractable_and_verifiable() {
+        let cases = [
+            ("a 50mm cube", cube_50_dsl()),
+            ("cylinder 30mm diameter 80mm tall", cylinder_30x80_dsl()),
+            (
+                "hollow it out with wall thickness 3mm",
+                shell_wall_3mm_dsl(),
+            ),
+            ("apply a 15 degree tilt", tilted_15deg_dsl()),
+            ("make it exactly 42mm wide", width_42_dsl()),
+        ];
+
+        for (prompt, dsl) in cases {
+            let constraints = extract_dimensional_constraints(prompt);
+            assert!(
+                !constraints.is_empty(),
+                "expected at least one constraint extracted from '{prompt}'"
+            );
+            let report = verify_constraints_for_dsl(dsl, 56, &constraints)
+                .expect("constraint verification should succeed");
+            assert!(
+                report.all_satisfied,
+                "constraints from '{prompt}' were not satisfied: {:?}",
+                report.checks
+            );
+        }
     }
 
     fn canonical_scripted_model() -> ScriptedModel {
@@ -2118,6 +2377,68 @@ params {
   width = 80mm
   depth = 40mm
   height = 40mm
+}
+box(width, depth, height)
+"#
+    }
+
+    fn cube_50_dsl() -> &'static str {
+        r#"// Dimensional check: 50mm cube
+params {
+  size = 50mm
+}
+box(size, size, size)
+"#
+    }
+
+    fn cylinder_30x80_dsl() -> &'static str {
+        r#"// Dimensional check: 30mm diameter, 80mm tall cylinder
+params {
+  radius = 15mm
+  height = 80mm
+}
+cylinder(radius, height)
+"#
+    }
+
+    fn shell_wall_3mm_dsl() -> &'static str {
+        r#"// Dimensional check: 3mm shell thickness
+params {
+  radius = 20mm
+  wall = 3mm
+}
+shell(sphere(radius), wall)
+"#
+    }
+
+    fn tilted_15deg_dsl() -> &'static str {
+        r#"// Dimensional check: 15 degree tilt from vertical
+params {
+  radius = 10mm
+  height = 80mm
+  tilt = 15deg
+}
+rotate_x(cylinder(radius, height), tilt)
+"#
+    }
+
+    fn width_40_dsl() -> &'static str {
+        r#"// Initial model misses exact-width target
+params {
+  width = 40mm
+  depth = 30mm
+  height = 20mm
+}
+box(width, depth, height)
+"#
+    }
+
+    fn width_42_dsl() -> &'static str {
+        r#"// Adjusted model matches exact-width target
+params {
+  width = 42mm
+  depth = 30mm
+  height = 20mm
 }
 box(width, depth, height)
 "#
