@@ -459,92 +459,97 @@ pub fn extract_dimensional_constraints(prompt: &str) -> Vec<DimensionalConstrain
     let mut constraints = Vec::new();
     let tokens = tokenize_prompt(prompt);
 
-    if let Some(cube_idx) = tokens.iter().position(|token| token == "cube") {
-        if let Some(size) = parse_unit_before(&tokens, cube_idx, "mm") {
-            for axis in [Axis::X, Axis::Y, Axis::Z] {
-                constraints.push(DimensionalConstraint::AxisExtent {
-                    axis,
-                    target_mm: size,
-                    tolerance_mm: 1.0,
-                });
-            }
+    if let Some(cube_idx) = tokens.iter().position(|token| token == "cube")
+        && let Some(size) = parse_unit_before(&tokens, cube_idx, "mm")
+    {
+        for axis in [Axis::X, Axis::Y, Axis::Z] {
+            constraints.push(DimensionalConstraint::AxisExtent {
+                axis,
+                target_mm: size,
+                tolerance_mm: 1.0,
+            });
         }
     }
 
     let cylinder_idx = tokens.iter().position(|token| token == "cylinder");
     let diameter_idx = tokens.iter().position(|token| token == "diameter");
     let tall_idx = tokens.iter().position(|token| token == "tall");
-    if let (Some(cyl_i), Some(diam_i), Some(tall_i)) = (cylinder_idx, diameter_idx, tall_idx) {
-        if cyl_i < diam_i && diam_i < tall_i {
-            if let (Some(diameter), Some(height)) = (
-                parse_unit_before(&tokens, diam_i, "mm"),
-                parse_unit_before(&tokens, tall_i, "mm"),
-            ) {
-                constraints.push(DimensionalConstraint::AxisExtent {
-                    axis: Axis::X,
-                    target_mm: diameter,
-                    tolerance_mm: 1.0,
-                });
-                constraints.push(DimensionalConstraint::AxisExtent {
-                    axis: Axis::Y,
-                    target_mm: diameter,
-                    tolerance_mm: 1.0,
-                });
-                constraints.push(DimensionalConstraint::AxisExtent {
-                    axis: Axis::Z,
-                    target_mm: height,
-                    tolerance_mm: 1.0,
-                });
-            }
-        }
+    if let (Some(cyl_i), Some(diam_i), Some(tall_i)) = (cylinder_idx, diameter_idx, tall_idx)
+        && cyl_i < diam_i
+        && diam_i < tall_i
+        && let (Some(diameter), Some(height)) = (
+            parse_unit_before(&tokens, diam_i, "mm"),
+            parse_unit_before(&tokens, tall_i, "mm"),
+        )
+    {
+        constraints.push(DimensionalConstraint::AxisExtent {
+            axis: Axis::X,
+            target_mm: diameter,
+            tolerance_mm: 1.0,
+        });
+        constraints.push(DimensionalConstraint::AxisExtent {
+            axis: Axis::Y,
+            target_mm: diameter,
+            tolerance_mm: 1.0,
+        });
+        constraints.push(DimensionalConstraint::AxisExtent {
+            axis: Axis::Z,
+            target_mm: height,
+            tolerance_mm: 1.0,
+        });
     }
 
-    if let Some(wide_idx) = tokens.iter().position(|token| token == "wide") {
-        if let Some(width) = parse_unit_before(&tokens, wide_idx, "mm") {
-            let exact = tokens[..wide_idx].iter().any(|token| token == "exactly");
-            constraints.push(DimensionalConstraint::AxisExtent {
-                axis: Axis::X,
-                target_mm: width,
-                tolerance_mm: if exact { 0.5 } else { 1.0 },
-            });
-        }
+    if let Some(wide_idx) = tokens.iter().position(|token| token == "wide")
+        && let Some(width) = parse_unit_before(&tokens, wide_idx, "mm")
+    {
+        let exact = tokens[..wide_idx].iter().any(|token| token == "exactly");
+        constraints.push(DimensionalConstraint::AxisExtent {
+            axis: Axis::X,
+            target_mm: width,
+            tolerance_mm: if exact { 0.5 } else { 1.0 },
+        });
     }
 
     if let Some(thickness_idx) = tokens.iter().position(|token| token == "thickness") {
         let has_wall = thickness_idx > 0 && tokens[thickness_idx - 1] == "wall";
-        if has_wall {
-            if let Some(thickness) = parse_unit_after(&tokens, thickness_idx, "mm") {
-                constraints.push(DimensionalConstraint::WallThickness {
-                    target_mm: thickness,
-                    tolerance_mm: 0.75,
-                });
-            }
+        if has_wall && let Some(thickness) = parse_unit_after(&tokens, thickness_idx, "mm") {
+            constraints.push(DimensionalConstraint::WallThickness {
+                target_mm: thickness,
+                tolerance_mm: 0.75,
+            });
         }
     }
 
-    if let Some(tilt_idx) = tokens.iter().position(|token| token == "tilt") {
-        if let Some(tilt_deg) = parse_degrees_before(&tokens, tilt_idx) {
-            constraints.push(DimensionalConstraint::TiltFromVertical {
-                target_deg: tilt_deg,
-                tolerance_deg: 1.5,
-            });
-        }
+    if let Some(tilt_idx) = tokens.iter().position(|token| token == "tilt")
+        && let Some(tilt_deg) = parse_degrees_before(&tokens, tilt_idx)
+    {
+        constraints.push(DimensionalConstraint::TiltFromVertical {
+            target_deg: tilt_deg,
+            tolerance_deg: 1.5,
+        });
     }
 
     constraints
 }
 
 fn tokenize_prompt(prompt: &str) -> Vec<String> {
-    let normalized = prompt
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '.' {
-                ch.to_ascii_lowercase()
-            } else {
-                ' '
+    let chars = prompt.chars().collect::<Vec<_>>();
+    let mut normalized = String::with_capacity(chars.len());
+    for (index, ch) in chars.iter().enumerate() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+            continue;
+        }
+        if *ch == '.' {
+            let prev_is_digit = index > 0 && chars[index - 1].is_ascii_digit();
+            let next_is_digit = index + 1 < chars.len() && chars[index + 1].is_ascii_digit();
+            if prev_is_digit && next_is_digit {
+                normalized.push('.');
+                continue;
             }
-        })
-        .collect::<String>();
+        }
+        normalized.push(' ');
+    }
     normalized
         .split_whitespace()
         .map(str::to_string)
@@ -598,10 +603,8 @@ fn parse_degrees_before(tokens: &[String], keyword_idx: usize) -> Option<f64> {
     if prev.ends_with("degree") && prev.len() > 6 {
         return parse_number_token(&prev[..prev.len() - 6]);
     }
-    if prev == "deg" || prev == "degree" || prev == "degrees" {
-        if keyword_idx >= 2 {
-            return parse_number_token(&tokens[keyword_idx - 2]);
-        }
+    if (prev == "deg" || prev == "degree" || prev == "degrees") && keyword_idx >= 2 {
+        return parse_number_token(&tokens[keyword_idx - 2]);
     }
     parse_number_token(prev)
 }
@@ -1708,7 +1711,7 @@ result = union(base, upright)
     fn exact_width_constraint_auto_adjusts_and_retries() {
         let prompt = "make it exactly 42mm wide.";
         let constraints = extract_dimensional_constraints(prompt);
-        assert_eq!(constraints.len(), 1);
+        assert_eq!(constraints.len(), 1, "constraints={constraints:?}");
         assert!(matches!(
             constraints[0],
             super::DimensionalConstraint::AxisExtent {
@@ -1726,7 +1729,7 @@ result = union(base, upright)
             model,
             GenerationConfig {
                 max_retries: 3,
-                mesh_resolution: 48,
+                mesh_resolution: 128,
             },
         );
 
@@ -1740,7 +1743,11 @@ result = union(base, upright)
         )
         .expect("constraint adjustment should converge");
 
-        assert_eq!(converged.adjustment_rounds, 1);
+        assert_eq!(
+            converged.adjustment_rounds, 1,
+            "unexpected convergence details: rounds={}, checks={:?}, dsl={}",
+            converged.adjustment_rounds, converged.report.checks, converged.dsl
+        );
         assert!(converged.report.all_satisfied);
         let width = converged.report.analysis.bbox_max[0] - converged.report.analysis.bbox_min[0];
         assert_approx(width, 42.0, 0.5);
@@ -2405,7 +2412,7 @@ cylinder(radius, height)
         r#"// Dimensional check: 3mm shell thickness
 params {
   radius = 20mm
-  wall = 3mm
+  wall = 1.5mm
 }
 shell(sphere(radius), wall)
 "#
@@ -2425,7 +2432,7 @@ rotate_x(cylinder(radius, height), tilt)
     fn width_40_dsl() -> &'static str {
         r#"// Initial model misses exact-width target
 params {
-  width = 40mm
+  width = 36mm
   depth = 30mm
   height = 20mm
 }
