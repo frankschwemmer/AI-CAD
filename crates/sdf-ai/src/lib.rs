@@ -60,6 +60,8 @@ Constraints:
 - Always include a `params` block.
 - Include short comments explaining key design decisions.
 - Favor watertight, printable solids with positive volume.
+- Ensure that the object has a flat base where practical, for 3D printing.
+- Dimensional constraints must be strictly adhered to and parametrically defined.
 "#;
 
 pub const CANONICAL_PROMPTS: [&str; 20] = [
@@ -1003,23 +1005,39 @@ fn build_adjustment_feedback(constraints: &[DimensionalConstraint]) -> String {
 
 fn estimate_wall_thickness(mesh: &Mesh) -> Option<f64> {
     let (min, max) = bounding_box(mesh);
-    let center_y = (min[1] + max[1]) * 0.5;
-    let center_z = (min[2] + max[2]) * 0.5;
-    let origin = [min[0] - 1.0, center_y, center_z];
-    let direction = [1.0, 0.0, 0.0];
-    let mut intersections = ray_triangle_intersections(mesh, origin, direction);
-    if intersections.len() < 2 {
-        return None;
+    let center = [
+        (min[0] + max[0]) * 0.5,
+        (min[1] + max[1]) * 0.5,
+        (min[2] + max[2]) * 0.5,
+    ];
+
+    let mut min_thickness: Option<f64> = None;
+
+    let directions = [
+        ([min[0] - 1.0, center[1], center[2]], [1.0, 0.0, 0.0]),
+        ([center[0], min[1] - 1.0, center[2]], [0.0, 1.0, 0.0]),
+        ([center[0], center[1], min[2] - 1.0], [0.0, 0.0, 1.0]),
+    ];
+
+    for (origin, dir) in directions {
+        let mut intersections = ray_triangle_intersections(mesh, origin, dir);
+        if intersections.len() >= 2 {
+            intersections.sort_by(|a, b| a.total_cmp(b));
+            intersections.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+
+            let thickness = intersections
+                .windows(2)
+                .map(|pair| pair[1] - pair[0])
+                .filter(|delta| *delta > 1e-5)
+                .min_by(|a, b| a.total_cmp(b));
+
+            if let Some(t) = thickness {
+                min_thickness = Some(min_thickness.map_or(t, |current| current.min(t)));
+            }
+        }
     }
 
-    intersections.sort_by(|a, b| a.total_cmp(b));
-    intersections.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
-
-    intersections
-        .windows(2)
-        .map(|pair| pair[1] - pair[0])
-        .filter(|delta| *delta > 1e-5)
-        .min_by(|a, b| a.total_cmp(b))
+    min_thickness
 }
 
 fn ray_triangle_intersections(mesh: &Mesh, origin: [f64; 3], direction: [f64; 3]) -> Vec<f64> {

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI SDF Forge</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <!-- Left Pane: AI Chat Interface -->
+      <aside class="chat-panel">
+        <div class="chat-header">
+          <div class="header-titles">
+            <h1>AI SDF Forge</h1>
+            <p class="subtitle">Conversational CAD Engine</p>
+          </div>
+          <span id="ws-status" class="status-badge disconnected">Disconnected</span>
+        </div>
+
+        <div id="chat-history" class="chat-history">
+          <!-- Chat messages will be injected here -->
+          <div class="message assistant">
+            <div class="avatar">AI</div>
+            <div class="bubble">
+              Hello! I'm your AI CAD assistant. Describe a 3D object like <em>"a 50mm box"</em> or <em>"a capsule"</em>, and I'll generate the SDF.
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-input-area">
+          <textarea id="chat-input" placeholder="Type a prompt (e.g., 'a 50mm box') and press Enter..." rows="1"></textarea>
+          <button id="chat-send" aria-label="Send Prompt">
+            <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="css-i6dzq1"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          </button>
+        </div>
+      </aside>
+
+      <!-- Right Pane: 3D Stage -->
+      <main class="stage-wrap">
+        <canvas id="stage" aria-label="3D viewer"></canvas>
+        
+        <!-- Floating HUD -->
+        <div class="floating-hud">
+          <div class="hud-group">
+            <label class="toggle">
+              <input id="wireframe" type="checkbox" />
+              <span class="toggle-slider"></span>
+            </label>
+            <span class="hud-label">Wireframe</span>
+          </div>
+          <div class="hud-metrics">
+            <div id="measure-output" class="metric">Dist: --</div>
+            <div id="bbox-output" class="metric">BBox: --</div>
+          </div>
+          <div class="hud-controls">
+            <button id="run-benchmark" class="icon-btn" title="Run Benchmark">⚡ Bench</button>
+            <div id="bench-output" class="metric">--</div>
+          </div>
+        </div>
+        
+        <!-- Hidden config for ws URL so we don't break existing logic -->
+        <input type="hidden" id="ws-url" value="ws://127.0.0.1:3000/ws" />
+        <input type="hidden" id="resolution" value="64" />
+        <textarea id="dsl" style="display:none;"></textarea>
+        <!-- we use auto-connect now, so we hide these buttons but keep them for compat -->
+        <button id="ws-connect" style="display:none;"></button>
+        <button id="ws-send" style="display:none;"></button>
+        <button id="load-sphere" style="display:none;"></button>
+        <button id="load-empty" style="display:none;"></button>
+        <button id="run-self-tests" style="display:none;"></button>
+        <pre id="test-output" style="display:none;"></pre>
+      </main>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

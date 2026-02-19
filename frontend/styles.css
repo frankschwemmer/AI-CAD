@@ -1,0 +1,154 @@
+:root {
+  --bg: #e9f0f5;
+  --panel: #f8fafc;
+  --ink: #1d2b38;
+  --muted: #5c6e7d;
+  --accent: #1e7f74;
+  --line: #ccdae7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 20% 0%, #d8edf0 0%, transparent 40%),
+    linear-gradient(140deg, #eef4f8, #dce8f0);
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  height: 100%;
+}
+
+.panel {
+  padding: 1rem;
+  overflow: auto;
+  border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 92%, white 8%);
+  backdrop-filter: blur(4px);
+}
+
+h1 {
+  margin: 0;
+  letter-spacing: 0.04em;
+}
+
+h2 {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+section {
+  margin-bottom: 0.95rem;
+  padding-bottom: 0.95rem;
+  border-bottom: 1px dashed var(--line);
+}
+
+button,
+input,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
+  background: white;
+  color: var(--ink);
+}
+
+button {
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(25, 55, 82, 0.12);
+}
+
+button:active {
+  transform: translateY(0);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+}
+
+.row.gap {
+  gap: 0.5rem;
+}
+
+.row input[type="checkbox"] {
+  width: auto;
+  margin-right: 0.5rem;
+}
+
+.stack {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 7rem;
+  font-family: "SF Mono", "Monaco", monospace;
+}
+
+.muted {
+  color: var(--muted);
+  margin: 0.4rem 0;
+}
+
+#test-output,
+#bench-output,
+#ws-status,
+#measure-output,
+#bbox-output {
+  margin-top: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+#test-output {
+  white-space: pre-wrap;
+  background: #f2f7fb;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.6rem;
+}
+
+.stage-wrap {
+  position: relative;
+  overflow: hidden;
+}
+
+#stage {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .panel {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    max-height: 45vh;
+  }
+}

@@ -57,16 +57,18 @@ impl MarchingCubesConfig {
     }
 }
 
+use rayon::prelude::*;
+
 pub fn extract_mesh_from_sdf<S>(config: &MarchingCubesConfig, sdf: &S) -> Mesh
 where
-    S: Sdf3,
+    S: Sdf3 + Sync,
 {
     extract_mesh_with(config, |point| sdf.evaluate(point))
 }
 
-pub fn extract_mesh_with<F>(config: &MarchingCubesConfig, mut sample: F) -> Mesh
+pub fn extract_mesh_with<F>(config: &MarchingCubesConfig, sample: F) -> Mesh
 where
-    F: FnMut(Point3) -> f64,
+    F: Fn(Point3) -> f64 + Sync + Send,
 {
     let [nx, ny, nz] = config.resolution;
     if nx < 2 || ny < 2 || nz < 2 {
@@ -74,7 +76,7 @@ where
     }
 
     let spacing = config.spacing();
-    let field = sample_grid(config, spacing, &mut sample);
+    let field = sample_grid(config, spacing, &sample);
 
     let mut mesh = Mesh::empty();
     let mut edge_cache = EdgeVertexCache::new(nx, ny, nz);
@@ -155,28 +157,27 @@ where
     mesh
 }
 
-fn sample_grid<F>(config: &MarchingCubesConfig, spacing: Point3, sample: &mut F) -> Vec<f64>
+fn sample_grid<F>(config: &MarchingCubesConfig, spacing: Point3, sample: &F) -> Vec<f64>
 where
-    F: FnMut(Point3) -> f64,
+    F: Fn(Point3) -> f64 + Sync + Send,
 {
     let [nx, ny, nz] = config.resolution;
-    let mut field = vec![0.0_f64; nx * ny * nz];
-
-    for z in 0..nz {
-        for y in 0..ny {
-            for x in 0..nx {
-                let point = [
-                    config.min[0] + (x as f64) * spacing[0],
-                    config.min[1] + (y as f64) * spacing[1],
-                    config.min[2] + (z as f64) * spacing[2],
-                ];
-                let idx = grid_index(x, y, z, nx, ny);
-                field[idx] = sample(point);
-            }
-        }
-    }
-
-    field
+    
+    (0..nz)
+        .into_par_iter()
+        .flat_map_iter(|z| {
+            (0..ny).flat_map(move |y| {
+                (0..nx).map(move |x| {
+                    let point = [
+                        config.min[0] + (x as f64) * spacing[0],
+                        config.min[1] + (y as f64) * spacing[1],
+                        config.min[2] + (z as f64) * spacing[2],
+                    ];
+                    sample(point)
+                })
+            })
+        })
+        .collect()
 }
 
 #[inline]
