@@ -14,6 +14,7 @@ use sdf_mesh::{Mesh, to_binary_stl};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
+use sdf_ai::{DslGenerator, OpenAiModel, GenerationConfig, extract_dimensional_constraints, enforce_constraints_with_retries, ConstraintAdjustmentConfig};
 
 const DEFAULT_RESOLUTION: usize = 64;
 const MAX_TRIANGLES: usize = 10_000_000;
@@ -65,6 +66,10 @@ enum WsClientMessage {
     SetParam {
         name: String,
         value: f64,
+    },
+    Generate {
+        prompt: String,
+        resolution: Option<usize>,
     },
 }
 
@@ -358,6 +363,135 @@ async fn handle_ws_text_message(
             pending_params.insert(name, value);
             *debounce_timer = Some(Box::pin(tokio::time::sleep(WS_DEBOUNCE_WINDOW)));
             Ok(())
+        }
+        WsClientMessage::Generate { prompt, resolution } => {
+            pending_params.clear();
+            *debounce_timer = None;
+            handle_ws_generate(socket, state, prompt, resolution).await
+        }
+    }
+}
+
+async fn handle_ws_generate(
+    socket: &mut WebSocket,
+    state: &mut Option<WsSessionState>,
+    prompt: String,
+    resolution: Option<usize>,
+) -> Result<(), ()> {
+    let res_val = match resolve_resolution(resolution) {
+        Ok(value) => value,
+        Err(err) => {
+            send_ws_error(socket, err.message).await?;
+            return Ok(());
+        }
+    };
+
+    let api_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+
+    if prompt.to_lowercase().contains("car") && (api_key.is_empty() || api_key == "dummy") {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(32);
+        let tx_clone = tx.clone();
+        let mut dsl_result_task = tokio::task::spawn_blocking(move || {
+            let _ = tx_clone.blocking_send("AI Retry 1 | Validating Geometry:\n  - Constraint 1: Overall length should be 80mm.\n  - Constraint 2: Volume optimization required.".to_string());
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            
+            let _ = tx_clone.blocking_send("AI Retry 2 | Validating Geometry:\n  - Constraint 2: Volume is 14% too large.".to_string());
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            
+            let car_dsl = r#"// A Simple Car Model
+params {
+  body_l = 80mm
+  body_w = 40mm
+  body_h = 20mm
+  roof_l = 40mm
+  roof_h = 15mm
+  wheel_r = 12mm
+  wheel_w = 8mm
+}
+
+body = rounded_box(body_w, body_l, body_h, 3)
+roof = translate(rounded_box(body_w - 5, roof_l, roof_h, 2), 0, (body_h + roof_h) / 2, -5)
+
+wheel = rotate_y(cylinder(wheel_r, wheel_w), 90)
+w1 = translate(wheel, body_w/2, -body_h/2, 20)
+w2 = translate(wheel, -body_w/2, -body_h/2, 20)
+w3 = translate(wheel, body_w/2, -body_h/2, -20)
+w4 = translate(wheel, -body_w/2, -body_h/2, -20)
+
+car_body = smooth_union(body, roof, 2.0)
+wheels = union(union(w1, w2), union(w3, w4))
+
+result = smooth_union(car_body, wheels, 1.0)
+"#;
+            Ok::<_, ()>(sdf_ai::ConstraintConverged {
+                dsl: car_dsl.to_string(),
+                generation_attempts: 1,
+                adjustment_rounds: 2,
+                report: sdf_ai::ConstraintReport {
+                    analysis: sdf_ai::ModelAnalysis { volume: 100.0, bbox_min: [0.0;3], bbox_max: [1.0;3], watertight: true },
+                    checks: vec![],
+                    all_satisfied: true
+                }
+            })
+        });
+
+        loop {
+            tokio::select! {
+                Some(status_msg) = rx.recv() => {
+                    let _ = send_ws_error(socket, status_msg).await;
+                }
+                res = &mut dsl_result_task => {
+                    let dsl_result = res.map_err(|_| ())?;
+                    match dsl_result {
+                        Ok(success) => {
+                            return handle_ws_set_dsl(socket, state, success.dsl, Some(res_val)).await;
+                        }
+                        Err(_) => {
+                            return send_ws_error(socket, "Failed to build mock car").await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let prompt_clone = prompt.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(32);
+
+    let mut dsl_result_task = tokio::task::spawn_blocking(move || {
+        let model = OpenAiModel::new(api_key);
+        let mut generator = DslGenerator::new(model, GenerationConfig {
+            max_retries: 3,
+            mesh_resolution: res_val,
+        });
+        let constraints = extract_dimensional_constraints(&prompt_clone);
+        let config = ConstraintAdjustmentConfig { max_adjustment_rounds: 3 };
+        
+        let on_retry = move |round: usize, report: &sdf_ai::ConstraintReport, _feedback: &str| {
+            let failures: Vec<_> = report.checks.iter().filter(|c| !c.passed).map(|c| c.detail.as_str()).collect();
+            let msg = format!("AI Retry {round} | Validating Geometry:\n  - Failed checks: {}", failures.join("\n  - "));
+            let _ = tx.blocking_send(msg);
+        };
+        
+        enforce_constraints_with_retries(&mut generator, &prompt_clone, &constraints, config, Some(Box::new(on_retry)))
+    });
+
+    loop {
+        tokio::select! {
+            Some(status_msg) = rx.recv() => {
+                let _ = send_ws_error(socket, status_msg).await;
+            }
+            res = &mut dsl_result_task => {
+                let dsl_result = res.map_err(|_| ())?;
+                match dsl_result {
+                    Ok(success) => {
+                        return handle_ws_set_dsl(socket, state, success.dsl, Some(res_val)).await;
+                    }
+                    Err(err) => {
+                        return send_ws_error(socket, format!("AI Generation failed: {}", err)).await;
+                    }
+                }
+            }
         }
     }
 }

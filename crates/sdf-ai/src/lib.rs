@@ -139,6 +139,86 @@ pub enum GenerationError {
     },
 }
 
+pub struct OpenAiModel {
+    pub api_key: String,
+    pub model: String,
+    pub base_url: String,
+}
+
+impl OpenAiModel {
+    pub fn new(api_key: String) -> Self {
+        let base_url = std::env::var("OPENAI_BASE_URL")
+            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+        let model = std::env::var("LLM_MODEL")
+            .unwrap_or_else(|_| "gpt-4o".to_string());
+
+        Self {
+            api_key: if api_key.is_empty() { "dummy".to_string() } else { api_key },
+            model,
+            base_url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
+        }
+    }
+}
+
+impl LanguageModel for OpenAiModel {
+    fn generate_dsl(&mut self, request: GenerationRequest<'_>) -> Result<String, String> {
+        let mut messages = vec![
+            serde_json::json!({ "role": "system", "content": request.system_prompt }),
+        ];
+        
+        if let Some(dsl) = request.current_dsl {
+            let user_content = format!(
+                "Modify this DSL to address the user request: '{}'.\n\n\
+                Current DSL:\n```sdf\n{}\n```\n\n\
+                Validation Errors to fix:\n{}",
+                request.user_prompt,
+                dsl,
+                request.validation_errors.join("\n")
+            );
+            messages.push(serde_json::json!({ "role": "user", "content": user_content }));
+        } else {
+            messages.push(serde_json::json!({ "role": "user", "content": request.user_prompt }));
+        }
+        
+        let payload = serde_json::json!({
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.2,
+        });
+
+        let payload_str = serde_json::to_string(&payload).map_err(|e| format!("Serialization error: {}", e))?;
+        let resp = ureq::post(&self.base_url)
+            .set("Authorization", &format!("Bearer {}", self.api_key))
+            .set("Content-Type", "application/json")
+            .send_string(&payload_str)
+            .map_err(|e| format!("OpenAI API error: {:?}", e))?;
+
+        let body_str = resp.into_string()
+            .map_err(|e| format!("Failed to read response: {:?}", e))?;
+        let body: serde_json::Value = serde_json::from_str(&body_str)
+            .map_err(|e| format!("Failed to parse OpenAI response: {:?}", e))?;
+
+        let content = body["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| "No content in OpenAI response".to_string())?;
+
+        let mut dsl = content.trim().to_string();
+        if dsl.contains("```") {
+            let parts: Vec<&str> = dsl.split("```").collect();
+            if parts.len() >= 3 {
+                let code_block = parts[1];
+                if let Some(idx) = code_block.find('\n') {
+                    dsl = code_block[idx+1..].to_string();
+                } else {
+                    dsl = code_block.to_string();
+                }
+            }
+        }
+
+        Ok(dsl)
+    }
+}
+
 impl fmt::Display for GenerationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -654,6 +734,7 @@ pub fn enforce_constraints_with_retries<C: LanguageModel>(
     user_prompt: &str,
     constraints: &[DimensionalConstraint],
     config: ConstraintAdjustmentConfig,
+    mut on_retry: Option<Box<dyn FnMut(usize, &ConstraintReport, &str) + Send>>,
 ) -> Result<ConstraintConverged, ConstraintEnforcementError> {
     let mut generation_attempts = 0usize;
     let mut rounds = 0usize;
@@ -688,6 +769,11 @@ pub fn enforce_constraints_with_retries<C: LanguageModel>(
             .map(|check| check.constraint.clone())
             .collect::<Vec<_>>();
         let feedback = build_adjustment_feedback(&failed_constraints);
+        
+        if let Some(ref mut callback) = on_retry {
+            callback(rounds + 1, &report, &feedback);
+        }
+        
         generated = generator.generate_modification(&generated.dsl, &feedback)?;
         generation_attempts += generated.attempts;
         rounds += 1;

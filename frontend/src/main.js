@@ -14,7 +14,7 @@ const nodes = {
   resolution: document.getElementById('resolution'),
   bench: document.getElementById('bench-output'),
   benchRun: document.getElementById('run-benchmark'),
-  
+
   // New chat nodes
   chatHistory: document.getElementById('chat-history'),
   chatInput: document.getElementById('chat-input'),
@@ -85,7 +85,11 @@ function connectWebSocket() {
         });
         finishAssistantMessage(`Generated mesh in ${Number(payload.time_ms).toFixed(1)}ms with ${info.triangles} triangles.`);
       } else if (payload.type === 'error') {
-        finishAssistantMessage(`Error: ${payload.message}`);
+        if (payload.message.startsWith('AI Retry')) {
+          appendAssistantMessage(payload.message);
+        } else {
+          finishAssistantMessage(`Error: ${payload.message}`);
+        }
       }
     } catch (err) {
       console.error(err);
@@ -122,14 +126,51 @@ function addAssistantTyping() {
   scrollToBottom();
 }
 
+function appendAssistantMessage(text) {
+  if (!currentAssistantBubble) {
+    addAssistantTyping();
+  }
+
+  // Remove typing indicator if present
+  const typing = currentAssistantBubble.querySelector('.loading-dots');
+  if (typing) {
+    typing.remove();
+    currentAssistantBubble.classList.remove('typing');
+  }
+
+  const block = document.createElement('div');
+  block.style.marginTop = '8px';
+  block.style.fontSize = '0.85em';
+  block.style.color = 'var(--text-muted)';
+  block.innerHTML = escapeHtml(text).replace(/\n/g, '<br/>');
+  currentAssistantBubble.appendChild(block);
+
+  // Re-add typing indicator at the bottom
+  const newTyping = document.createElement('div');
+  newTyping.className = 'loading-dots';
+  newTyping.style.marginTop = '8px';
+  newTyping.innerHTML = '<div></div><div></div><div></div>';
+  currentAssistantBubble.appendChild(newTyping);
+
+  scrollToBottom();
+}
+
 function finishAssistantMessage(text) {
   if (currentAssistantBubble) {
+    const typing = currentAssistantBubble.querySelector('.loading-dots');
+    if (typing) typing.remove();
+
     currentAssistantBubble.classList.remove('typing');
-    currentAssistantBubble.innerHTML = escapeHtml(text).replace(/\n/g, '<br/>');
+
+    const block = document.createElement('div');
+    block.style.marginTop = currentAssistantBubble.children.length > 0 ? '8px' : '0';
+    block.style.color = 'var(--text)';
+    block.innerHTML = escapeHtml(text).replace(/\n/g, '<br/>');
+    currentAssistantBubble.appendChild(block);
+
     currentAssistantBubble = null;
     scrollToBottom();
   } else {
-    // If no typing bubble exists, create a new one
     const msg = document.createElement('div');
     msg.className = 'message assistant';
     msg.innerHTML = `
@@ -146,102 +187,33 @@ function scrollToBottom() {
 }
 
 function escapeHtml(unsafe) {
-    return unsafe
-         .replace(/&/g, "&amp;")
-         .replace(/</g, "&lt;")
-         .replace(/>/g, "&gt;")
-         .replace(/"/g, "&quot;")
-         .replace(/'/g, "&#039;");
- }
-
-function parseUserPrompt(prompt) {
-  const text = prompt.toLowerCase();
-  
-  // Very naive pattern matching for demo purposes
-  
-  if (text.includes("box") || text.includes("cube")) {
-    let size = 50; // default
-    const match = text.match(/(\\d+)mm/);
-    if (match) size = parseInt(match[1]);
-    
-    return `// AI Generated Box
-params {
-  size = ${size}mm
-}
-result = box(size/2, size/2, size/2)`;
-
-  } else if (text.includes("cylinder")) {
-    return `// AI Generated Cylinder
-params {
-  radius = 20mm
-  height = 80mm
-}
-result = cylinder(radius, height)`;
-
-  } else if (text.includes("capsule")) {
-    return `// AI Generated Capsule
-params {
-  r = 15mm
-  len = 60mm
-}
-result = capsule(0, 0, 0, 0, len, 0, r)`;
-
-  } else if (text.includes("torus")) {
-    return `// AI Generated Torus
-params {
-  major = 40mm
-  minor = 10mm
-}
-result = torus(major, minor)`;
-  
-  } else if (text.includes("union") || text.includes("combine")) {
-    return `// AI Generated Union
-params {
-  r = 25mm
-  width = 40mm
-}
-a = sphere(r)
-b = box(width/2, width/2, width/2)
-result = smooth_union(a, translate(b, 20, 0, 0), 0.2)`;
-  } else {
-    // Default fallback
-    let size = 30; // default
-    const match = text.match(/(\\d+)mm/);
-    if (match) size = parseInt(match[1]);
-    
-    return `// AI Generated Sphere
-params {
-  radius = ${size}mm
-}
-result = sphere(radius)`;
-  }
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function handleInput() {
   const prompt = nodes.chatInput.value.trim();
   if (!prompt) return;
-  
+
   nodes.chatInput.value = '';
   addUserMessage(prompt);
   addAssistantTyping();
-  
-  // Simulate AI latency
-  setTimeout(() => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      finishAssistantMessage("Error: Not connected to the backend server.");
-      return;
-    }
-    
-    const dsl = parseUserPrompt(prompt);
-    
-    const payload = {
-      type: 'set_dsl',
-      dsl: dsl,
-      resolution: 64
-    };
-    socket.send(JSON.stringify(payload));
-    
-  }, 600);
+
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    finishAssistantMessage("Error: Not connected to the backend server.");
+    return;
+  }
+
+  const payload = {
+    type: 'generate',
+    prompt: prompt,
+    resolution: 64
+  };
+  socket.send(JSON.stringify(payload));
 }
 
 nodes.chatSend.addEventListener('click', handleInput);
